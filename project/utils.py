@@ -148,5 +148,240 @@ def find_active_player(img):
 
     player = np.argmax(n) + 1
 
-    print(player)
-    return player
+    return "p"+str(player)
+
+
+def detect_card_contours(img, min_area=100000, max_area=250000):
+    """
+    Args:
+        img: Input RGB image
+        min_area: Minimum contour area (filter out noise)
+        max_area: Maximum contour area (filter out large regions)
+        
+    Returns:
+        List of valid card contours and the edge map
+    """
+    # Convert to grayscale for edge detection
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    
+    # Canny edge detection
+    edges = cv2.Canny(gray, 50, 150)
+    
+    # Apply dilation to connect nearby edges
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4, 4))
+    dilated = cv2.dilate(edges, kernel, iterations=2)
+    
+    # Find contours
+    contours, _ = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Filter contours based on area and shape
+    valid_contours = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        
+        # Filter by area
+        if area < min_area or area > max_area:
+            continue
+        
+        # Get the convex hull
+        hull = cv2.convexHull(contour)
+        hull_area = cv2.contourArea(hull)
+        
+        # Calculate solidity
+        if hull_area > 0:
+            solidity = float(area) / hull_area
+            if solidity < 0.6: 
+                continue
+        
+        # Get bounding rect and check aspect ratio
+        x, y, w, h = cv2.boundingRect(contour)
+        if w == 0 or h == 0:
+            continue
+        
+        aspect_ratio = float(w) / h
+        # Uno cards have aspect ratio around 0.6-1.6 
+        if aspect_ratio < 0.4 or aspect_ratio > 2.0:
+            continue
+        
+        # Approximate contour to polygon
+        epsilon = 0.02 * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        
+        # Cards should have at least 4 corners
+        if len(approx) >= 4:
+            valid_contours.append(contour)
+    
+    return valid_contours, edges, dilated
+
+
+def extract_and_normalize_card(img_rgb, contour, card_width=350, card_height=540):
+    """
+    Args:
+        img_rgb: Input RGB image
+        card_width: Target card width in pixels
+        card_height: Target card height in pixels
+        
+    Returns:
+        Normalized card image
+    """
+    # Get the four corners of the contour
+    rect = cv2.minAreaRect(contour)
+    box = cv2.boxPoints(rect)
+    
+    # Calculate all pairwise distances between corners
+    distances = {}
+    for i in range(4):
+        for j in range(i+1, 4):
+            dist = np.linalg.norm(box[i] - box[j])
+            distances[(i, j)] = dist
+    
+    # The 4 shortest distances are the sides, the 2 longest are diagonals
+    sorted_dists = sorted(distances.items(), key=lambda x: x[1])
+    
+    # Extract which corners are connected by edges
+    edge_pairs = set()
+    for (i, j), dist in sorted_dists[:4]: 
+        edge_pairs.add(((min(i, j), max(i, j)), dist))
+    
+    # Build adjacency list
+    adj = {0: [], 1: [], 2: [], 3: []}
+    for (i, j), dist in edge_pairs:
+        adj[i].append((j, dist))
+        adj[j].append((i, dist))
+    
+    # Traverse the rectangle edges to get correct ordering
+    ordered = [0]
+    prev = -1
+    current = 0
+    
+    while len(ordered) < 4:
+        next_corner = None
+        min_dist = 10000000
+        for neighbor, dist in adj[current]:
+            if dist < min_dist and neighbor != prev:
+                min_dist = dist
+                next_corner = neighbor
+        
+        if next_corner is None:
+            break
+        
+        ordered.append(next_corner)
+        prev = current
+        current = next_corner
+    
+    # Check orientation using the shoelace formula (signed area)
+    # Positive = counter-clockwise, Negative = clockwise
+    ordered_points = np.array([box[i] for i in ordered])
+    signed_area = 0
+    for i in range(len(ordered_points)):
+        p1 = ordered_points[i]
+        p2 = ordered_points[(i + 1) % len(ordered_points)]
+        signed_area += (p2[0] - p1[0]) * (p2[1] + p1[1])
+    
+    if signed_area > 0:
+        ordered = ordered[::-1]
+    
+    # Define source points in the correct order
+    src_points = np.float32([box[i] for i in ordered]) # pyright: ignore[reportArgumentType]
+    
+    # Define destination points
+    dst_points = np.float32([[0, 0],[card_width, 0],[card_width, card_height],[0, card_height]]) # pyright: ignore[reportArgumentType]
+    
+    # Get perspective transformation matrix
+    matrix = cv2.getPerspectiveTransform(src_points, dst_points)  # type: ignore
+    
+    # Apply perspective transformation
+    normalized_card = cv2.warpPerspective(img_rgb, matrix, (card_width, card_height))
+    
+    return normalized_card
+
+
+def classify_card_color(img_rgb):
+    """    
+    Args:
+        img_rgb: Input RGB image
+        
+    Returns:
+        Detected color ('r', 'y', 'g', 'b', 'black')
+    """    
+    # Sample the mean color from the card's interior
+    mean_rgb = cv2.mean(img_rgb)[:3]
+
+    print(mean_rgb)
+    
+    # Define color ranges in HSV
+    # Note: OpenCV HSV: H=0-180, S=0-255, V=0-255
+    
+    # Red (0-10 or 160-180)
+    if np.argmax(mean_rgb) == 0 and mean_rgb[1] < 200:
+        return 'r'
+    
+    # Yellow (20-40)
+    elif np.argmax(mean_rgb) == 0 and mean_rgb[1] > 200:
+        return 'y'
+    
+    # Green
+    elif np.argmax(mean_rgb) == 1 and mean_rgb[1] > 200:
+        return 'g'
+    
+    # Blue
+    elif np.argmax(mean_rgb) == 2 and mean_rgb[2] > 200:
+        return 'b'
+    
+    else:
+        return None
+    
+
+def classify_card_number(img):
+    """
+    Placeholder
+    """
+    return "PLACEHOLDER"
+
+
+def find_central_card(img):
+    """    
+    Args:
+        img: Input RGB image
+        
+    Returns:
+        Detected card (final format)
+    """
+    img_cropped = img[700:1900, 900:3100, :]
+
+    mean_value = img_cropped.mean()
+
+    if mean_value > 200:
+        hsv = cv2.cvtColor(img_cropped, cv2.COLOR_RGB2HSV)
+    
+        # Extract saturation channel (colored regions have high saturation)
+        saturation = hsv[:, :, 1]
+
+        # Threshold to find colored pixels
+        _, saturation_mask = cv2.threshold(saturation, 50, 255, cv2.THRESH_BINARY)
+
+        # Apply morphological operations to clean up
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        saturation_mask = cv2.morphologyEx(saturation_mask, cv2.MORPH_CLOSE, kernel)
+        saturation_mask = cv2.morphologyEx(saturation_mask, cv2.MORPH_OPEN, kernel, iterations=2)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (100, 100))
+        saturation_mask = cv2.morphologyEx(saturation_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+        # Convert back to RGB for compatibility
+        img_for_contours = cv2.cvtColor(saturation_mask, cv2.COLOR_GRAY2RGB)
+    else:
+        img_for_contours = img_cropped
+
+    valid_contours, _, _ = detect_card_contours(img_for_contours, 100000, 200000)
+    if len(valid_contours) > 0:
+        normalized = extract_and_normalize_card(img_cropped, valid_contours[0])
+        color = classify_card_color(normalized)
+        number = classify_card_number(normalized)
+
+        if color:
+            return color+"_"+number
+        else:
+            return number
+        
+    else:
+        return None
