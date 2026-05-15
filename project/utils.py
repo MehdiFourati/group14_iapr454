@@ -225,6 +225,142 @@ def detect_card_contours(img, min_area=100000, max_area=250000):
     return valid_contours, edges, dilated
 
 
+def detect_number_contours(img, dilation_kernel = 2, min_area=1000, max_area=2500, thr_solidity=0.8, corners=8):
+    """
+    Args:
+        img: Input RGB image
+        min_area: Minimum contour area (filter out noise)
+        max_area: Maximum contour area (filter out large regions)
+        
+    Returns:
+        List of valid card contours and the edge map
+    """
+    # Convert to grayscale for edge detection
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    
+    # Canny edge detection
+    edges = cv2.Canny(gray, 50, 150)
+    
+    # Apply dilation to connect nearby edges
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_kernel, dilation_kernel))
+    dilated = cv2.dilate(edges, kernel, iterations=2)
+    
+    # Find contours
+    contours, _ = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Filter contours based on area and shape
+    valid_contours = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        
+        # Filter by area
+        if area < min_area or area > max_area:
+            continue
+        
+        # Get the convex hull
+        hull = cv2.convexHull(contour)
+        hull_area = cv2.contourArea(hull)
+        
+        # Calculate solidity
+        if hull_area > 0:
+            solidity = float(area) / hull_area
+            if solidity < thr_solidity: 
+                continue
+        
+        # Get bounding rect and check aspect ratio
+        x, y, w, h = cv2.boundingRect(contour)
+        if w == 0 or h == 0:
+            continue
+        
+        aspect_ratio = float(w) / h
+        if aspect_ratio < 0.4 or aspect_ratio > 2.0:
+            continue
+        
+        # Approximate contour to polygon
+        epsilon = 0.02 * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        
+        if len(approx) >= corners:
+            valid_contours.append(contour)
+    
+    return valid_contours, edges, dilated
+
+
+def filter_contours_by_distance(contours, min_distance=50, target_distance=480, distance_tolerance=50):
+    """
+    Args:
+        contours : List of contours to filter
+        min_distance : Minimum allowed distance between contours. Contours closer than this are merged.
+        target_distance : Target distance. Contours at approximately this distance are removed (one of the pair).
+        distance_tolerance : Tolerance around target_distance (e.g., 480 ± 50 means 430-530).
+    
+    Returns:
+        filtered_contours : List of remaining contours after filtering/merging
+    """
+    if len(contours) <= 1:
+        return contours
+    
+    # Calculate centroids
+    centroids = []
+    for contour in contours:
+        M = cv2.moments(contour)
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            centroids.append((cx, cy))
+        else:
+            centroids.append((0, 0))
+    
+    # Track which contours to merge and which to remove
+    to_merge = {}  # Maps index to list of indices to merge with
+    to_remove = set()
+    
+    # Check all pairs of contours
+    for i in range(len(centroids)):
+        if i in to_remove or i in to_merge:
+            continue
+            
+        for j in range(i + 1, len(centroids)):
+            if j in to_remove or j in to_merge:
+                continue
+            
+            # Calculate distance between centroids
+            dist = np.sqrt((centroids[i][0] - centroids[j][0])**2 + 
+                          (centroids[i][1] - centroids[j][1])**2)
+            
+            # Merge if too close
+            if dist < min_distance:
+                if i not in to_merge:
+                    to_merge[i] = [i]
+                to_merge[i].append(j)
+                to_remove.add(j)
+            
+            # Remove if at target distance (within tolerance)
+            elif abs(dist - target_distance) <= distance_tolerance:
+                to_remove.add(j)  # Remove the second one
+    
+    # Merge contours that are too close
+    filtered_contours = []
+    for i in range(len(contours)):
+        if i in to_remove and i not in to_merge:
+            continue
+        
+        if i in to_merge:
+            # Merge this contour with others
+            merged_points = []
+            for idx in to_merge[i]:
+                merged_points.extend(contours[idx].reshape(-1, 2))
+            
+            # Find convex hull of merged points
+            merged_array = np.array(merged_points, dtype=np.int32)
+            merged_contour = cv2.convexHull(merged_array)
+            filtered_contours.append(merged_contour)
+        else:
+            filtered_contours.append(contours[i])
+    
+    return filtered_contours
+
+
 def extract_and_normalize_card(img_rgb, contour, card_width=350, card_height=540):
     """
     Args:
@@ -317,25 +453,16 @@ def classify_card_color(img_rgb):
     """    
     # Sample the mean color from the card's interior
     mean_rgb = cv2.mean(img_rgb)[:3]
-
-    print(mean_rgb)
     
-    # Define color ranges in HSV
-    # Note: OpenCV HSV: H=0-180, S=0-255, V=0-255
-    
-    # Red (0-10 or 160-180)
     if np.argmax(mean_rgb) == 0 and mean_rgb[1] < 200:
         return 'r'
     
-    # Yellow (20-40)
     elif np.argmax(mean_rgb) == 0 and mean_rgb[1] > 200:
         return 'y'
     
-    # Green
     elif np.argmax(mean_rgb) == 1 and mean_rgb[1] > 200:
         return 'g'
     
-    # Blue
     elif np.argmax(mean_rgb) == 2 and mean_rgb[2] > 200:
         return 'b'
     
@@ -381,7 +508,10 @@ def find_central_card(img):
         # Convert back to RGB for compatibility
         img_for_contours = cv2.cvtColor(saturation_mask, cv2.COLOR_GRAY2RGB)
     else:
-        img_for_contours = img_cropped
+        img_for_contours = card_only_filter_leaf(cv2.cvtColor(img_cropped, cv2.COLOR_RGB2BGR))
+        img_for_contours = remove_small_objects(img_for_contours, max_size=300)
+        img_for_contours = remove_small_holes(img_for_contours, max_size=20)
+        img_for_contours = cv2.cvtColor(img_for_contours.astype(np.uint8) * 255, cv2.COLOR_GRAY2RGB)
 
     valid_contours, _, _ = detect_card_contours(img_for_contours, 100000, 200000)
     if len(valid_contours) > 0:
@@ -396,3 +526,46 @@ def find_central_card(img):
         
     else:
         return None
+
+
+def find_cards_per_player(img):
+
+    mean_value = img.mean()
+
+    if mean_value > 200:
+
+        img = card_only_filter_blank(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+        img = remove_small_holes(img, max_size=20)
+        img = cv2.cvtColor(img.astype(np.uint8) * 255, cv2.COLOR_GRAY2RGB)
+
+    else:
+
+        img = card_only_filter_leaf(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+        img = remove_small_objects(img, max_size=300)
+        img = remove_small_holes(img, max_size=20)
+        img = cv2.cvtColor(img.astype(np.uint8) * 255, cv2.COLOR_GRAY2RGB)
+
+    img_1 = img[1900:,700:3200]
+    img_2 = img[:,3100:]
+    img_3 = img[:900,700:3200]
+    img_4 = img[:,:750]
+
+    players = [img_1, img_2, img_3, img_4]
+
+    cards = {1:[],2:[],3:[],4:[]}
+
+    for i, player in enumerate(players):
+        
+        valid_contours, _, _ = detect_number_contours(player, 3, 600, 1600, 0.7, 4)
+        filtered_contours = filter_contours_by_distance(valid_contours, min_distance=60, target_distance=480, distance_tolerance=80)
+        for contour in filtered_contours:
+            normalized = extract_and_normalize_card(player, contour)
+            color = classify_card_color(normalized[:50,:50])
+            number = classify_card_number(contour)
+
+            if color:
+                cards[i+1].append(color+"_"+number)
+            else:
+                cards[i+1].append(number)
+    
+    return cards
