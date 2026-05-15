@@ -124,6 +124,17 @@ def apply_opening(img_th, disk_size):
     img_opening = opening(img_th, footprint)
     return img_opening
 
+def card_only_filter_blank(img):
+    return ((img[:,:,0] < 180) |
+            (img[:,:,1] < 180) |
+            (img[:,:,2] < 180))
+    
+def card_only_filter_leaf(img):
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    rgb_filtered = apply_rgb_threshold(rgb, r_range=(200,255), g_range=(200,255), b_range=(200,255))
+    hsv_filtered = (hsv[:,:,0]<30)
+    return rgb_filtered & hsv_filtered
 
 def find_active_player(img):
     mean_value = img.mean()
