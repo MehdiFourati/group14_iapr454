@@ -133,7 +133,7 @@ def card_only_filter_leaf(img):
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     rgb_filtered = apply_rgb_threshold(rgb, r_range=(190,255), g_range=(190,255), b_range=(190,255))
-    hsv_filtered = (hsv[:,:,0]<30)
+    hsv_filtered = (hsv[:,:,0]<30) | ((hsv[:,:,0]<170)&(hsv[:,:,0]>160))
     return rgb_filtered & hsv_filtered
 
 def find_active_player(img):
