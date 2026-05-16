@@ -124,10 +124,12 @@ def apply_opening(img_th, disk_size):
     img_opening = opening(img_th, footprint)
     return img_opening
 
+
 def card_only_filter_blank(img):
     return ((img[:,:,0] < 180) |
             (img[:,:,1] < 180) |
             (img[:,:,2] < 180))
+    
     
 def card_only_filter_leaf(img):
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -135,6 +137,7 @@ def card_only_filter_leaf(img):
     rgb_filtered = apply_rgb_threshold(rgb, r_range=(190,255), g_range=(190,255), b_range=(190,255))
     hsv_filtered = (hsv[:,:,0]<30) | ((hsv[:,:,0]<170)&(hsv[:,:,0]>160))
     return rgb_filtered & hsv_filtered
+
 
 def find_active_player(img):
     mean_value = img.mean()
@@ -229,11 +232,12 @@ def detect_number_contours(img, dilation_kernel = 2, min_area=1000, max_area=250
     """
     Args:
         img: Input RGB image
+        dilation_kernel: Kernel size for dilation
         min_area: Minimum contour area (filter out noise)
         max_area: Maximum contour area (filter out large regions)
         
     Returns:
-        List of valid card contours and the edge map
+        List of valid card contours, edges, dilated image
     """
     # Convert to grayscale for edge detection
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
@@ -257,24 +261,15 @@ def detect_number_contours(img, dilation_kernel = 2, min_area=1000, max_area=250
         if area < min_area or area > max_area:
             continue
         
-        # Get the convex hull
-        hull = cv2.convexHull(contour)
-        hull_area = cv2.contourArea(hull)
+        # # Get the convex hull
+        # hull = cv2.convexHull(contour)
+        # hull_area = cv2.contourArea(hull)
         
-        # Calculate solidity
-        if hull_area > 0:
-            solidity = float(area) / hull_area
-            if solidity < thr_solidity: 
-                continue
-        
-        # Get bounding rect and check aspect ratio
-        x, y, w, h = cv2.boundingRect(contour)
-        if w == 0 or h == 0:
-            continue
-        
-        aspect_ratio = float(w) / h
-        if aspect_ratio < 0.4 or aspect_ratio > 2.0:
-            continue
+        # # Calculate solidity
+        # if hull_area > 0:
+        #     solidity = float(area) / hull_area
+        #     if solidity < thr_solidity: 
+        #         continue
         
         # Approximate contour to polygon
         epsilon = 0.02 * cv2.arcLength(contour, True)
@@ -454,16 +449,16 @@ def classify_card_color(img_rgb):
     # Sample the mean color from the card's interior
     mean_rgb = cv2.mean(img_rgb)[:3]
     
-    if np.argmax(mean_rgb) == 0 and mean_rgb[1] < 200:
+    if np.argmax(mean_rgb) == 0 and mean_rgb[0] - mean_rgb[1] > 25 and np.mean(mean_rgb) > 100:
         return 'r'
     
-    elif np.argmax(mean_rgb) == 0 and mean_rgb[1] > 200:
+    elif np.argmax(mean_rgb) == 0 and mean_rgb[0] - mean_rgb[1] < 25 and np.mean(mean_rgb) > 100:
         return 'y'
     
-    elif np.argmax(mean_rgb) == 1 and mean_rgb[1] > 200:
+    elif np.argmax(mean_rgb) == 1 and np.mean(mean_rgb) > 100:
         return 'g'
     
-    elif np.argmax(mean_rgb) == 2 and mean_rgb[2] > 200:
+    elif np.argmax(mean_rgb) == 2 and np.mean(mean_rgb) > 100:
         return 'b'
     
     else:
@@ -532,10 +527,18 @@ def find_cards_per_player(img):
 
     mean_value = img.mean()
 
+    img_1_org = img[1900:,700:3200]
+    img_2_org = img[:,3100:]
+    img_3_org = img[:900,700:3200]
+    img_4_org = img[:,:750]
+
+    players_org = [img_1_org, img_2_org, img_3_org, img_4_org]
+
     if mean_value > 200:
 
         img = card_only_filter_blank(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
         img = remove_small_holes(img, max_size=20)
+        img = remove_small_objects(img, max_size=10000)
         img = cv2.cvtColor(img.astype(np.uint8) * 255, cv2.COLOR_GRAY2RGB)
 
     else:
@@ -556,11 +559,11 @@ def find_cards_per_player(img):
 
     for i, player in enumerate(players):
         
-        valid_contours, _, _ = detect_number_contours(player, 3, 600, 1600, 0.7, 4)
-        filtered_contours = filter_contours_by_distance(valid_contours, min_distance=60, target_distance=480, distance_tolerance=80)
+        valid_contours, _, _ = detect_number_contours(player, 3, 600, 1800, 0.7, 4)
+        filtered_contours = filter_contours_by_distance(valid_contours, min_distance=80, target_distance=480, distance_tolerance=20)
         for contour in filtered_contours:
-            normalized = extract_and_normalize_card(player, contour)
-            color = classify_card_color(normalized[:50,:50])
+            normalized = extract_and_normalize_card(players_org[i], contour)
+            color = classify_card_color(normalized)
             number = classify_card_number(contour)
 
             if color:
