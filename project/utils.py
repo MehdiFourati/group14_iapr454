@@ -356,12 +356,14 @@ def filter_contours_by_distance(contours, min_distance=50, target_distance=480, 
     return filtered_contours
 
 
-def extract_and_normalize_card(img_rgb, contour, card_width=350, card_height=540):
+def extract_and_normalize_card(img_rgb, contour, card_width=350, card_height=540, extension=0):
     """
     Args:
         img_rgb: Input RGB image
+        contour: Card contour
         card_width: Target card width in pixels
         card_height: Target card height in pixels
+        extension: Extra pixels to extend the extracted area outward from card center
         
     Returns:
         Normalized card image
@@ -369,6 +371,17 @@ def extract_and_normalize_card(img_rgb, contour, card_width=350, card_height=540
     # Get the four corners of the contour
     rect = cv2.minAreaRect(contour)
     box = cv2.boxPoints(rect)
+
+    # Calculate center of the bounding box
+    center = box.mean(axis=0)
+    
+    # Apply extension by moving each corner away from center
+    if extension > 0:
+        for i in range(4):
+            direction = box[i] - center
+            norm = np.linalg.norm(direction)
+            if norm > 0:
+                box[i] = box[i] + (direction / norm) * extension
     
     # Calculate all pairwise distances between corners
     distances = {}
@@ -522,6 +535,7 @@ def find_central_card(img):
     else:
         return None
 
+
 def assign_card2player(center):
 
     top_l = lambda x: ((1800-2662)/(1050-500))*(x-500) + 2662
@@ -537,6 +551,7 @@ def assign_card2player(center):
         return 'p1'
     if center[0] > 2800 and center[1] > bot_r(center[0]) and center[1] < top_r(center[0]):
         return 'p2'
+
 
 def find_cards_per_player(img):
 
@@ -571,6 +586,10 @@ def find_cards_per_player(img):
     filtered_contours = filter_contours_by_distance(valid_contours, min_distance=80, target_distance=480, distance_tolerance=20)
 
     for contour, classification in filtered_contours:
-        cards[detect_player(contour)].append(classification)
+        M = cv2.moments(contour)
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+        cards[players[assign_card2player((cx, cy))]].append(classification)
     
     return cards
