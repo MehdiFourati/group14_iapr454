@@ -522,6 +522,21 @@ def find_central_card(img):
     else:
         return None
 
+def assign_card2player(center):
+
+    top_l = lambda x: ((1800-2662)/(1050-500))*(x-500) + 2662
+    top_r = lambda x: ((1800-2662)/(2800-3500))*(x-3500) + 2662
+    bot_l = lambda x: ((900-0)/(1050-500))*(x-500)
+    bot_r = lambda x: ((0-900)/(3500-2800))*(x-2800) + 900
+    
+    if center[1] < 900 and center[1] < bot_l(center[0]) and center[1] < bot_r(center[0]):
+        return 'p3'
+    if center[0] < 1050 and center[1] > bot_l(center[0]) and center[1] < top_l(center[0]):
+        return 'p4'
+    if center[1] > 1800 and center[1] > top_l(center[0]) and center[1] > top_r(center[0]):
+        return 'p1'
+    if center[0] > 2800 and center[1] > bot_r(center[0]) and center[1] < top_r(center[0]):
+        return 'p2'
 
 def find_cards_per_player(img):
 
