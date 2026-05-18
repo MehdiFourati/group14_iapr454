@@ -525,14 +525,9 @@ def find_central_card(img):
 
 def find_cards_per_player(img):
 
+    org_img = img
+
     mean_value = img.mean()
-
-    img_1_org = img[1900:,700:3200]
-    img_2_org = img[:,3100:]
-    img_3_org = img[:900,700:3200]
-    img_4_org = img[:,:750]
-
-    players_org = [img_1_org, img_2_org, img_3_org, img_4_org]
 
     if mean_value > 200:
 
@@ -548,27 +543,19 @@ def find_cards_per_player(img):
         img = remove_small_holes(img, max_size=20)
         img = cv2.cvtColor(img.astype(np.uint8) * 255, cv2.COLOR_GRAY2RGB)
 
-    img_1 = img[1900:,700:3200]
-    img_2 = img[:,3100:]
-    img_3 = img[:900,700:3200]
-    img_4 = img[:,:750]
-
-    players = [img_1, img_2, img_3, img_4]
+    players = {"p1": 1, "p2": 2, "p3": 3, "p4": 4}
 
     cards = {1:[],2:[],3:[],4:[]}
-
-    for i, player in enumerate(players):
         
-        valid_contours, _, _ = detect_number_contours(player, 3, 600, 1800, 0.7, 4)
-        filtered_contours = filter_contours_by_distance(valid_contours, min_distance=80, target_distance=480, distance_tolerance=20)
-        for contour in filtered_contours:
-            normalized = extract_and_normalize_card(players_org[i], contour)
-            color = classify_card_color(normalized)
-            number = classify_card_number(contour)
+    valid_contours, _, _ = detect_number_contours(img, 3, 600, 1800, 0.7, 4)
+    
+    for contour in valid_contours:
+        normalized = extract_and_normalize_card(org_img, contour)
 
-            if color:
-                cards[i+1].append(color+"_"+number)
-            else:
-                cards[i+1].append(number)
+    classified_contours = classify_contours(valid_contours)
+    filtered_contours = filter_contours_by_distance(valid_contours, min_distance=80, target_distance=480, distance_tolerance=20)
+
+    for contour, classification in filtered_contours:
+        cards[detect_player(contour)].append(classification)
     
     return cards
