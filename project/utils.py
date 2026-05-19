@@ -1,10 +1,168 @@
 import cv2
-import skimage
-import sklearn
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import classification_report, accuracy_score, f1_score
 import numpy as np
-import matplotlib.pyplot as plt
-from PIL import Image
 from skimage.morphology import closing, opening, disk, remove_small_holes, remove_small_objects
+
+
+class FourierDiscriminator:
+
+    def __init__(
+        self,
+        n_neighbors=3,
+        rejection_threshold=2.0
+    ):
+
+        self.scaler = StandardScaler()
+
+        self.knn = KNeighborsClassifier(
+            n_neighbors=n_neighbors
+        )
+
+        self.rejection_threshold = rejection_threshold
+
+    def fit(
+        self,
+        datasets,
+        test_size=0.2,
+        random_state=42
+    ):
+
+        X, y = build_classifier_dataset(datasets)
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=test_size,
+            stratify=y,
+            random_state=random_state
+        )
+
+        # normalize descriptors
+        X_train = self.scaler.fit_transform(X_train)
+        X_test = self.scaler.transform(X_test)
+
+        self.knn.fit(X_train, y_train)
+
+        y_pred = self.knn.predict(X_test)
+
+        print(f"Accuracy: {accuracy_score(y_test, y_pred):.4f}")
+        print(f"Macro F1 : {f1_score(y_test, y_pred, average='macro'):.4f}\n")
+
+        print(classification_report(y_test, y_pred))
+
+    def predict(self, descriptor):
+
+        descriptor = np.asarray(descriptor).reshape(1, -1)
+
+        # normalize
+        descriptor = self.scaler.transform(descriptor)
+
+        distances, _ = self.knn.kneighbors(descriptor)
+
+        # normalized mean neighbor distance
+        mean_distance = distances.mean()
+
+        if mean_distance > self.rejection_threshold:
+            return "None", mean_distance
+
+        prediction = self.knn.predict(descriptor)[0]
+
+        return prediction, mean_distance
+
+
+def evaluate_image(
+    image,
+    truth_label,
+    classifier
+):
+    """
+    Evaluate all contours of one image against truth label.
+    """
+
+    contours = detect_number_contours(image)
+    descriptors_list, _, _ = fourier_descriptors(contours)
+
+    predictions = []
+
+    print(f"\nGround truth: {truth_label}\n")
+
+    for i, descriptor in enumerate(descriptors_list):
+
+        descriptor = np.asarray(descriptor).flatten()
+
+        pred, dist = classifier.predict(descriptor)
+
+        # force scalar string
+        pred = str(pred)
+
+        predictions.append(pred)
+
+        print(
+            f"Contour {i:02d} | "
+            f"Prediction: {pred:<10} | "
+            f"Distance: {dist:.3f}"
+        )
+
+    # remove unknown predictions
+    predictions = [p for p in predictions if p != "None"]
+
+    predicted_set = set(predictions)
+    truth_set = set(truth_label)
+
+    print("\nDetected labels :", predicted_set)
+    print("Expected labels :", truth_set)
+
+    # ===== SET-BASED METRICS =====
+
+    true_positive = len(predicted_set & truth_set)
+
+    precision = (
+        true_positive / len(predicted_set)
+        if len(predicted_set) > 0 else 0
+    )
+
+    recall = (
+        true_positive / len(truth_set)
+        if len(truth_set) > 0 else 0
+    )
+
+    if precision + recall == 0:
+        f1 = 0
+    else:
+        f1 = 2 * precision * recall / (precision + recall)
+
+    print(f"\nPrecision : {precision:.4f}")
+    print(f"Recall    : {recall:.4f}")
+    print(f"F1 score  : {f1:.4f}")
+
+    return f1
+
+
+def build_classifier_dataset(datasets):
+    """
+    Convert dictionary of descriptor datasets into X / y arrays.
+    """
+
+    X = []
+    y = []
+
+    for label, data in datasets.items():
+
+        data = np.asarray(data)
+
+        # flatten descriptors if needed
+        data = data.reshape(data.shape[0], -1)
+
+        X.append(data)
+        y.extend([label] * len(data))
+
+    X = np.vstack(X)
+    y = np.array(y)
+
+    return X, y
 
 
 def extract_rgb_channels(img):
@@ -228,7 +386,7 @@ def detect_card_contours(img, min_area=100000, max_area=250000):
     return valid_contours, edges, dilated
 
 
-def detect_number_contours(img, dilation_kernel = 2, min_area=1000, max_area=2500, thr_solidity=0.8, corners=8):
+def detect_number_contours(img, dilation_kernel=2, min_area=300, max_area=2200, thr_solidity=0.8, corners=4):
     """
     Args:
         img: Input RGB image
@@ -556,7 +714,253 @@ def assign_card2player(center):
         return 'p2'
 
 
-def find_cards_per_player(img):
+def fourier_descriptors(contours, n_samples=100, interpolation=True):
+    """
+    Compute translation and rotation invariant Fourier descriptors.
+
+    Also returns:
+    - contour center
+    - dominant contour rotation
+
+    Parameters
+    ----------
+    contours : list of (K,2) arrays
+    n_samples : int
+    interpolation : bool
+
+    Returns
+    -------
+    descriptors : (N, n_samples-1)
+        Translation + rotation invariant descriptors.
+
+    centers : (N, 2)
+        Contour centroids.
+
+    rotations : (N,)
+        Dominant contour orientation in radians.
+    """
+
+    descriptors = []
+    centers = []
+    rotations = []
+
+    for contour in contours:
+
+        contour = np.asarray(contour.squeeze(), dtype=np.float64)
+        d = np.sqrt(np.sum(np.diff(contour, axis=0)**2, axis=1))
+        t = np.concatenate([[0], np.cumsum(d)])
+
+        t_new = np.linspace(0, t[-1], n_samples)
+        x = np.interp(t_new, t, contour[:, 0])
+        y = np.interp(t_new, t, contour[:, 1])
+
+        contour = np.stack([x, y], axis=1)
+
+        center = contour.mean(axis=0)
+        centers.append(center)
+
+        z = contour[:, 0] + 1j * contour[:, 1]
+        fd = np.fft.fft(z)
+        fd[0] = 0
+
+        rotation = np.angle(fd[1])
+        rotations.append(rotation)
+        fd *= np.exp(-1j * rotation)
+        descriptors.append(np.abs(fd[1:]))
+
+    return (
+        np.array(descriptors),
+        np.array(centers),
+        np.array(rotations)
+    )
+
+
+def deduplicate_predictions(
+    predictions,
+    duplicate_distance_thresh=10,
+    pair_distance_target=480,
+    pair_distance_margin=50,
+    angle_thresh=15
+):
+    """
+    Keep only one prediction when:
+    - same class
+    - same color
+    - same angle
+    - AND centers are either:
+        * extremely close (duplicate)
+        * OR separated by ~480 +/- margin
+    """
+
+    kept = []
+
+    for pred in predictions:
+
+        keep = True
+
+        center_a = np.array(pred["center"])
+        angle_a = pred["angle"]
+        class_a = pred["class"]
+        color_a = pred["color"]
+
+        for existing in kept:
+
+            center_b = np.array(existing["center"])
+            angle_b = existing["angle"]
+            class_b = existing["class"]
+            color_b = existing["color"]
+
+            same_class = class_a == class_b
+            same_color = color_a == color_b
+
+            angle_diff = abs(angle_a - angle_b)
+            angle_diff = min(angle_diff, 360 - angle_diff)
+
+            same_angle = angle_diff < angle_thresh
+
+            dist = np.linalg.norm(center_a - center_b)
+
+            close_duplicate = (
+                dist < duplicate_distance_thresh
+            )
+
+            paired_duplicate = (
+                abs(dist - pair_distance_target)
+                < pair_distance_margin
+            )
+            
+            if (
+                same_class
+                and same_color
+                and same_angle
+                and (
+                    close_duplicate
+                    or paired_duplicate
+                )
+            ):
+                keep = False
+                break
+
+        if keep:
+            kept.append(pred)
+
+    return kept
+
+
+def format_card(card_class, color):
+    """
+    Convert prediction into CSV card format.
+    """
+    mapping = {
+        "plus2": "draw_2",
+        "plus4": "draw_4",
+        "reverse": "reverse",
+        "skip": "skip",
+        "wild": "wild",
+        "zero": "0",
+        "one": "1",
+        "two": "2",
+        "three": "3",
+        "four": "4",
+        "five": "5",
+        "six": "6",
+        "seven": "7",
+        "eight": "8",
+        "nine": "9",
+    }
+
+    if card_class in mapping:
+
+        value = mapping[card_class]
+
+        if card_class in ["wild", "plus4"]:
+            return value
+
+        return f"{color}_{value}"
+    return f"{color}_{card_class}"
+
+
+def classify_image(
+    img,
+    classifier,
+    distance_thresh=40,
+    angle_thresh=0.5,
+    distance_threshold_plus=30
+):
+
+    contours = detect_number_contours(img)
+    descriptors, centers, angles = fourier_descriptors(contours)
+    predictions = []
+
+    for idx, descriptor in enumerate(descriptors):
+
+        descriptor = np.asarray(descriptor).flatten()
+        card_type, dist = classifier.predict(descriptor)
+
+        if card_type == "None":
+            continue
+        
+        normalized_card = extract_and_normalize_card(img, contours[idx], extension=10)
+
+        if card_type == "six-nine":
+            #discriminate_six_nine(normalized_card)
+            card_type = 'six'
+            pass
+
+        # color extraction
+        color = classify_card_color(normalized_card)
+        player = assign_card2player(centers[idx])
+        
+        if player == None:
+            continue
+        if color == "black" and card_type not in ["wild", "plus"]:
+            continue
+        if card_type == "wild" and color != "black":
+            continue
+
+        predictions.append({
+            "class": card_type,
+            "color": color,
+            "player": player,
+            "center": centers[idx],
+            "angle": angles[idx],
+            "distance": dist
+        })
+
+    filtered = []
+
+    for p in predictions:
+
+        c = p["class"]
+        if c in ["two", "four"]:
+
+            is_near_plus = False
+            for q in predictions:
+                if q["class"] not in ["plus"]:
+                    continue
+                dist = np.linalg.norm(
+                    np.array(p["center"]) - np.array(q["center"])
+                )
+                if dist < distance_threshold_plus:
+                    is_near_plus = True
+                    break
+            if not is_near_plus:
+                continue
+
+        filtered.append(p)
+
+    predictions = filtered
+    
+    predictions = deduplicate_predictions(
+        predictions,
+        duplicate_distance_thresh=distance_thresh,
+        angle_thresh=angle_thresh
+    )
+
+    return predictions
+
+
+def find_cards_per_player(img, classifier):
 
     org_img = img
 
@@ -576,27 +980,21 @@ def find_cards_per_player(img):
         img = remove_small_holes(img, max_size=20)
         img = cv2.cvtColor(img.astype(np.uint8) * 255, cv2.COLOR_GRAY2RGB)
 
-    players = {"p1": 1, "p2": 2, "p3": 3, "p4": 4}
-
-    cards = {1:[],2:[],3:[],4:[]}
+    cards = {"p1": [], "p2": [], "p3": [], "p4": [], "center": []}
         
-    valid_contours, _, _ = detect_number_contours(img, 3, 600, 1800, 0.7, 4)
-    
-    for contour in valid_contours:
-        normalized = extract_and_normalize_card(org_img, contour)
+    predictions = classify_image(img, classifier)
 
-    classified_contours = classify_contours(valid_contours)
-    filtered_contours = filter_contours_by_distance(classified_contours, min_distance=50, target_distance=480, distance_tolerance=20)
+    for pred in predictions:
+        player = pred["player"]
+        color = pred["color"]
+        number = pred["class"]
 
-    for contour, classification in filtered_contours:
-        M = cv2.moments(contour)
-        if M["m00"] != 0:
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-        cards[players[assign_card2player((cx, cy))]].append(classification)
+        string = format_card(number, color)
 
-        for player in cards.items():
-            if len(player[1]) == 0:
-                cards[player[0]] = "EMPTY"
+        cards[player].append(string)
+
+        for i in cards.items():
+            if len(i[1]) == 0:
+                cards[i[0]] = "EMPTY"
 
     return cards
