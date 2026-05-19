@@ -284,7 +284,7 @@ def detect_number_contours(img, dilation_kernel = 2, min_area=1000, max_area=250
 def filter_contours_by_distance(contours, min_distance=50, target_distance=480, distance_tolerance=50):
     """
     Args:
-        contours : List of contours to filter
+        contours : Tuple(List of contours to filter, List of classified values)
         min_distance : Minimum allowed distance between contours. Contours closer than this are merged.
         target_distance : Target distance. Contours at approximately this distance are removed (one of the pair).
         distance_tolerance : Tolerance around target_distance (e.g., 480 ± 50 means 430-530).
@@ -292,12 +292,12 @@ def filter_contours_by_distance(contours, min_distance=50, target_distance=480, 
     Returns:
         filtered_contours : List of remaining contours after filtering/merging
     """
-    if len(contours) <= 1:
+    if len(contours[0]) <= 1:
         return contours
     
     # Calculate centroids
     centroids = []
-    for contour in contours:
+    for contour in contours[0]:
         M = cv2.moments(contour)
         if M["m00"] != 0:
             cx = int(M["m10"] / M["m00"])
@@ -331,11 +331,12 @@ def filter_contours_by_distance(contours, min_distance=50, target_distance=480, 
                 to_remove.add(j)
             
             # Remove if at target distance (within tolerance)
-            elif abs(dist - target_distance) <= distance_tolerance:
+            elif abs(dist - target_distance) <= distance_tolerance and contours[1][i] == contours[1][j]:
                 to_remove.add(j)  # Remove the second one
     
     # Merge contours that are too close
     filtered_contours = []
+    filtered_classes = []
     for i in range(len(contours)):
         if i in to_remove and i not in to_merge:
             continue
@@ -350,10 +351,12 @@ def filter_contours_by_distance(contours, min_distance=50, target_distance=480, 
             merged_array = np.array(merged_points, dtype=np.int32)
             merged_contour = cv2.convexHull(merged_array)
             filtered_contours.append(merged_contour)
+            filtered_classes.append(contours[1][i])
         else:
-            filtered_contours.append(contours[i])
+            filtered_contours.append(contours[0][i])
+            filtered_classes.append(contours[1][i])
     
-    return filtered_contours
+    return filtered_contours, filtered_classes
 
 
 def extract_and_normalize_card(img_rgb, contour, card_width=350, card_height=540, extension=0):
@@ -583,7 +586,7 @@ def find_cards_per_player(img):
         normalized = extract_and_normalize_card(org_img, contour)
 
     classified_contours = classify_contours(valid_contours)
-    filtered_contours = filter_contours_by_distance(valid_contours, min_distance=80, target_distance=480, distance_tolerance=20)
+    filtered_contours = filter_contours_by_distance(classified_contours, min_distance=50, target_distance=480, distance_tolerance=20)
 
     for contour, classification in filtered_contours:
         M = cv2.moments(contour)
@@ -591,5 +594,9 @@ def find_cards_per_player(img):
             cx = int(M["m10"] / M["m00"])
             cy = int(M["m01"] / M["m00"])
         cards[players[assign_card2player((cx, cy))]].append(classification)
-    
+
+        for player in cards.items():
+            if len(player[1]) == 0:
+                cards[player[0]] = "EMPTY"
+
     return cards
