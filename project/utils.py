@@ -10,6 +10,13 @@ from pathlib import Path
 from collections import Counter
 from skimage.morphology import closing, opening, disk, remove_small_holes, remove_small_objects
 from tqdm import tqdm
+import warnings
+
+
+warnings.filterwarnings(
+    "ignore",
+    message="Only one label was provided to `remove_small_objects`*"
+)
 
 
 class FourierDiscriminator:
@@ -225,7 +232,7 @@ def card_only_filter_leaf(img):
     hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
     rgb_filtered = apply_rgb_threshold(img, r_range=(200,255), g_range=(200,255), b_range=(200,255)) # see utils
     hsv_filtered = (hsv[:,:,0]<25) | ((hsv[:,:,0]<170)&(hsv[:,:,0]>160))
-    return rgb_filtered & hsv_filtered
+    return ~(rgb_filtered & hsv_filtered)
 
 
 def find_active_player(img):
@@ -326,6 +333,8 @@ def detect_number_contours(gray, min_area=300, max_area=2200):
     Returns:
         List of valid card contours, edges, dilated image
     """
+    
+    
     gray = remove_small_objects(gray.astype(np.uint8), min_size=max_area)
     gray = ~remove_small_objects(~gray.astype(np.uint8), min_size=min_area).astype(np.uint8)
 
@@ -957,17 +966,6 @@ def find_cards_per_player(img, classifier):
 def plot_contours(image, contours, color=(0, 255, 0), thickness=2):
     """
     Draw contours returned by cv2.findContours.
-
-    Parameters
-    ----------
-    image : np.ndarray
-        Input image (grayscale or BGR).
-    contours : list
-        Contours returned by cv2.findContours.
-    color : tuple
-        Contour color in BGR.
-    thickness : int
-        Line thickness.
     """
 
     if len(image.shape) == 2:
@@ -988,7 +986,6 @@ def classify_folder(img_folder, classifier):
     img_folder = Path(img_folder)
     
     for path in tqdm(img_folder.glob("*.jpg")):
-        print(f'image: {path.stem}')
         original_img = cv2.imread(str(path))
         original_img = cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB)
         row = []
