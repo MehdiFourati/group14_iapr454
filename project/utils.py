@@ -4,6 +4,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import classification_report, accuracy_score, f1_score
 import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+from pathlib import Path
+from collections import Counter
 from skimage.morphology import closing, opening, disk, remove_small_holes, remove_small_objects
 
 
@@ -27,7 +31,8 @@ class FourierDiscriminator:
         self,
         datasets,
         test_size=0.2,
-        random_state=42
+        random_state=42,
+        verbose = False
     ):
 
         X, y = build_classifier_dataset(datasets)
@@ -40,29 +45,23 @@ class FourierDiscriminator:
             random_state=random_state
         )
 
-        # normalize descriptors
         X_train = self.scaler.fit_transform(X_train)
         X_test = self.scaler.transform(X_test)
 
         self.knn.fit(X_train, y_train)
 
         y_pred = self.knn.predict(X_test)
-
-        print(f"Accuracy: {accuracy_score(y_test, y_pred):.4f}")
-        print(f"Macro F1 : {f1_score(y_test, y_pred, average='macro'):.4f}\n")
-
-        print(classification_report(y_test, y_pred))
+        if verbose:
+            print(f"Accuracy: {accuracy_score(y_test, y_pred):.4f}")
+            print(f"Macro F1 : {f1_score(y_test, y_pred, average='macro'):.4f}\n")
+            print(classification_report(y_test, y_pred))
 
     def predict(self, descriptor):
 
         descriptor = np.asarray(descriptor).reshape(1, -1)
-
-        # normalize
         descriptor = self.scaler.transform(descriptor)
 
         distances, _ = self.knn.kneighbors(descriptor)
-
-        # normalized mean neighbor distance
         mean_distance = distances.mean()
 
         if mean_distance > self.rejection_threshold:
@@ -71,74 +70,6 @@ class FourierDiscriminator:
         prediction = self.knn.predict(descriptor)[0]
 
         return prediction, mean_distance
-
-
-def evaluate_image(
-    image,
-    truth_label,
-    classifier
-):
-    """
-    Evaluate all contours of one image against truth label.
-    """
-
-    contours = detect_number_contours(image)
-    descriptors_list, _, _ = fourier_descriptors(contours)
-
-    predictions = []
-
-    print(f"\nGround truth: {truth_label}\n")
-
-    for i, descriptor in enumerate(descriptors_list):
-
-        descriptor = np.asarray(descriptor).flatten()
-
-        pred, dist = classifier.predict(descriptor)
-
-        # force scalar string
-        pred = str(pred)
-
-        predictions.append(pred)
-
-        print(
-            f"Contour {i:02d} | "
-            f"Prediction: {pred:<10} | "
-            f"Distance: {dist:.3f}"
-        )
-
-    # remove unknown predictions
-    predictions = [p for p in predictions if p != "None"]
-
-    predicted_set = set(predictions)
-    truth_set = set(truth_label)
-
-    print("\nDetected labels :", predicted_set)
-    print("Expected labels :", truth_set)
-
-    # ===== SET-BASED METRICS =====
-
-    true_positive = len(predicted_set & truth_set)
-
-    precision = (
-        true_positive / len(predicted_set)
-        if len(predicted_set) > 0 else 0
-    )
-
-    recall = (
-        true_positive / len(truth_set)
-        if len(truth_set) > 0 else 0
-    )
-
-    if precision + recall == 0:
-        f1 = 0
-    else:
-        f1 = 2 * precision * recall / (precision + recall)
-
-    print(f"\nPrecision : {precision:.4f}")
-    print(f"Recall    : {recall:.4f}")
-    print(f"F1 score  : {f1:.4f}")
-
-    return f1
 
 
 def build_classifier_dataset(datasets):
@@ -153,7 +84,7 @@ def build_classifier_dataset(datasets):
 
         data = np.asarray(data)
 
-        # flatten descriptors if needed
+        # flatten if needed
         data = data.reshape(data.shape[0], -1)
 
         X.append(data)
@@ -290,14 +221,15 @@ def card_only_filter_blank(img):
     
     
 def card_only_filter_leaf(img):
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    rgb_filtered = apply_rgb_threshold(rgb, r_range=(190,255), g_range=(190,255), b_range=(190,255))
-    hsv_filtered = (hsv[:,:,0]<30) | ((hsv[:,:,0]<170)&(hsv[:,:,0]>160))
+    hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+    rgb = img
+    rgb_filtered = apply_rgb_threshold(rgb, r_range=(200,255), g_range=(200,255), b_range=(200,255))
+    hsv_filtered = (hsv[:,:,0]<30)
     return rgb_filtered & hsv_filtered
 
 
 def find_active_player(img):
+    return 'p1'
     mean_value = img.mean()
     
     n = []
@@ -307,7 +239,6 @@ def find_active_player(img):
 
     else:
         img_filter = apply_rgb_threshold(img, (200,255), (200,255), (0,80))
-
     img_1 = apply_opening(img_filter[1900:,500:3500], 20)
     img_2 = apply_opening(img_filter[:,3100:], 20)
     img_3 = apply_opening(img_filter[:900,500:3500], 20)
@@ -386,57 +317,30 @@ def detect_card_contours(img, min_area=100000, max_area=250000):
     return valid_contours, edges, dilated
 
 
-def detect_number_contours(img, dilation_kernel=2, min_area=300, max_area=2200, thr_solidity=0.8, corners=4):
+def detect_number_contours(gray, min_area=300, max_area=2200):
     """
     Args:
         img: Input RGB image
-        dilation_kernel: Kernel size for dilation
         min_area: Minimum contour area (filter out noise)
         max_area: Maximum contour area (filter out large regions)
         
     Returns:
         List of valid card contours, edges, dilated image
     """
-    # Convert to grayscale for edge detection
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    
-    # Canny edge detection
-    edges = cv2.Canny(gray, 50, 150)
-    
-    # Apply dilation to connect nearby edges
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_kernel, dilation_kernel))
-    dilated = cv2.dilate(edges, kernel, iterations=2)
-    
-    # Find contours
-    contours, _ = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Filter contours based on area and shape
+    gray = remove_small_objects(gray.astype(np.uint8), min_size=max_area)
+    gray = ~remove_small_objects(~gray.astype(np.uint8), min_size=min_area).astype(np.uint8)
+
+    contours, _ = cv2.findContours(gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
     valid_contours = []
     for contour in contours:
         area = cv2.contourArea(contour)
-        
         # Filter by area
         if area < min_area or area > max_area:
             continue
-        
-        # # Get the convex hull
-        # hull = cv2.convexHull(contour)
-        # hull_area = cv2.contourArea(hull)
-        
-        # # Calculate solidity
-        # if hull_area > 0:
-        #     solidity = float(area) / hull_area
-        #     if solidity < thr_solidity: 
-        #         continue
-        
-        # Approximate contour to polygon
-        epsilon = 0.02 * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
-        
-        if len(approx) >= corners:
-            valid_contours.append(contour)
+        valid_contours.append(contour)
     
-    return valid_contours, edges, dilated
+    return valid_contours
 
 
 def filter_contours_by_distance(contours, min_distance=50, target_distance=480, distance_tolerance=50):
@@ -613,30 +517,39 @@ def extract_and_normalize_card(img_rgb, contour, card_width=350, card_height=540
 
 
 def classify_card_color(img_rgb):
-    """    
+    """
     Args:
-        img_rgb: Input RGB image
-        
+        img_rgb: RGB normalized card image
+
     Returns:
-        Detected color ('r', 'y', 'g', 'b', 'black')
-    """    
-    # Sample the mean color from the card's interior
-    mean_rgb = cv2.mean(img_rgb)[:3]
-    
-    if np.argmax(mean_rgb) == 0 and mean_rgb[0] - mean_rgb[1] > 25 and np.mean(mean_rgb) > 100:
-        return 'r'
-    
-    elif np.argmax(mean_rgb) == 0 and mean_rgb[0] - mean_rgb[1] < 25 and np.mean(mean_rgb) > 100:
-        return 'y'
-    
-    elif np.argmax(mean_rgb) == 1 and np.mean(mean_rgb) > 100:
-        return 'g'
-    
-    elif np.argmax(mean_rgb) == 2 and np.mean(mean_rgb) > 100:
-        return 'b'
-    
-    else:
+        'r', 'y', 'g', 'b', 'black', or None
+    """
+
+    img = img_rgb.astype(np.uint8)
+
+    valid_mask = card_only_filter_blank(img)
+    valid_pixels = img[valid_mask]
+
+    if len(valid_pixels) < 50:
         return None
+
+    mean_rgb = valid_pixels.mean(axis=0)
+
+    if mean_rgb.mean() < 60:
+        return "black"
+
+    dominant = np.argmax(mean_rgb)
+
+    if dominant == 0:
+        if abs(mean_rgb[0] - mean_rgb[1]) < 40:
+            return "y"
+        return "r"
+    elif dominant == 1:
+        return "g"
+    elif dominant == 2:
+        return "b"
+
+    return None
     
 
 def classify_card_number(img):
@@ -706,22 +619,20 @@ def assign_card2player(center):
     
     if center[1] < 900 and center[1] < bot_l(center[0]) and center[1] < bot_r(center[0]):
         return 'p3'
-    if center[0] < 1050 and center[1] > bot_l(center[0]) and center[1] < top_l(center[0]):
+    elif center[0] < 1050 and center[1] > bot_l(center[0]) and center[1] < top_l(center[0]):
         return 'p4'
-    if center[1] > 1800 and center[1] > top_l(center[0]) and center[1] > top_r(center[0]):
+    elif center[1] > 1800 and center[1] > top_l(center[0]) and center[1] > top_r(center[0]):
         return 'p1'
-    if center[0] > 2800 and center[1] > bot_r(center[0]) and center[1] < top_r(center[0]):
+    elif center[0] > 2800 and center[1] > bot_r(center[0]) and center[1] < top_r(center[0]):
         return 'p2'
+    else:
+        return 'center'
 
 
 def fourier_descriptors(contours, n_samples=100, interpolation=True):
     """
     Compute translation and rotation invariant Fourier descriptors.
-
-    Also returns:
-    - contour center
-    - dominant contour rotation
-
+    
     Parameters
     ----------
     contours : list of (K,2) arrays
@@ -747,6 +658,7 @@ def fourier_descriptors(contours, n_samples=100, interpolation=True):
     for contour in contours:
 
         contour = np.asarray(contour.squeeze(), dtype=np.float64)
+        
         d = np.sqrt(np.sum(np.diff(contour, axis=0)**2, axis=1))
         t = np.concatenate([[0], np.cumsum(d)])
 
@@ -755,7 +667,7 @@ def fourier_descriptors(contours, n_samples=100, interpolation=True):
         y = np.interp(t_new, t, contour[:, 1])
 
         contour = np.stack([x, y], axis=1)
-
+        
         center = contour.mean(axis=0)
         centers.append(center)
 
@@ -777,10 +689,7 @@ def fourier_descriptors(contours, n_samples=100, interpolation=True):
 
 def deduplicate_predictions(
     predictions,
-    duplicate_distance_thresh=10,
-    pair_distance_target=480,
-    pair_distance_margin=50,
-    angle_thresh=15
+    pair_distance_target=530
 ):
     """
     Keep only one prediction when:
@@ -816,27 +725,21 @@ def deduplicate_predictions(
             angle_diff = abs(angle_a - angle_b)
             angle_diff = min(angle_diff, 360 - angle_diff)
 
-            same_angle = angle_diff < angle_thresh
+            #deprecated (does not work well)
+            #same_angle = angle_diff < angle_thresh
+            same_angle = True
 
             dist = np.linalg.norm(center_a - center_b)
 
             close_duplicate = (
-                dist < duplicate_distance_thresh
-            )
-
-            paired_duplicate = (
-                abs(dist - pair_distance_target)
-                < pair_distance_margin
+                dist < pair_distance_target
             )
             
             if (
                 same_class
                 and same_color
                 and same_angle
-                and (
-                    close_duplicate
-                    or paired_duplicate
-                )
+                and close_duplicate
             ):
                 keep = False
                 break
@@ -883,14 +786,20 @@ def format_card(card_class, color):
 def classify_image(
     img,
     classifier,
-    distance_thresh=40,
-    angle_thresh=0.5,
-    distance_threshold_plus=30
+    pair_distance_target=530,
+    distance_threshold_plus=50
 ):
+    
+    mean_value = img.mean()
 
-    contours = detect_number_contours(img)
+    if mean_value > 200:
+        gray = card_only_filter_blank(img)
+    else:
+        gray = card_only_filter_leaf(img)
+    contours = detect_number_contours(gray)
     descriptors, centers, angles = fourier_descriptors(contours)
-    predictions = []
+
+    raw_predictions = []
 
     for idx, descriptor in enumerate(descriptors):
 
@@ -899,86 +808,139 @@ def classify_image(
 
         if card_type == "None":
             continue
-        
-        normalized_card = extract_and_normalize_card(img, contours[idx], extension=10)
+
+        normalized_card = extract_and_normalize_card(
+            img,
+            contours[idx],
+            extension=10
+        )
 
         if card_type == "six-nine":
-            #discriminate_six_nine(normalized_card)
-            card_type = 'six'
-            pass
+            # TODO: proper discrimination
+            card_type = "six"
 
-        # color extraction
         color = classify_card_color(normalized_card)
         player = assign_card2player(centers[idx])
-        
-        if player == None:
-            continue
-        if color == "black" and card_type not in ["wild", "plus"]:
-            continue
-        if card_type == "wild" and color != "black":
+
+        if player is None:
             continue
 
-        predictions.append({
+        if color == "black" and card_type not in ["wild", "plus"]:
+            continue
+
+        raw_predictions.append({
             "class": card_type,
             "color": color,
+            "mean_color": cv2.mean(normalized_card)[:3],
             "player": player,
             "center": centers[idx],
             "angle": angles[idx],
             "distance": dist
         })
 
-    filtered = []
+    plus_cards = [
+        p for p in raw_predictions
+        if p["class"] == "plus"
+    ]
 
-    for p in predictions:
+    non_plus = [
+        p for p in raw_predictions
+        if p["class"] != "plus"
+    ]
 
-        c = p["class"]
-        if c in ["two", "four"]:
+    final_predictions = []
 
-            is_near_plus = False
-            for q in predictions:
-                if q["class"] not in ["plus"]:
-                    continue
-                dist = np.linalg.norm(
-                    np.array(p["center"]) - np.array(q["center"])
-                )
-                if dist < distance_threshold_plus:
-                    is_near_plus = True
-                    break
-            if not is_near_plus:
+    used_non_plus = set()
+
+    for plus in plus_cards:
+
+        plus_center = np.array(plus["center"])
+
+        nearest = None
+        nearest_dist = float("inf")
+
+        nearest_type = None
+
+        for i, p in enumerate(non_plus):
+
+            if i in used_non_plus:
+                continue
+            if p["class"] not in ["two", "four"]:
                 continue
 
-        filtered.append(p)
+            d = np.linalg.norm(
+                np.array(p["center"]) - plus_center
+            )
+            print(d)
+            if d < nearest_dist and d < distance_threshold_plus:
+                nearest_dist = d
+                nearest = i
+                nearest_type = p["class"]
 
-    predictions = filtered
+        plus_fixed = dict(plus)
+        if nearest_type == "four":
+            plus_fixed["class"] = "plus4"
+        elif nearest_type == "two":
+            plus_fixed["class"] = "plus2"
+
+        #default
+        else:
+            plus_fixed["class"] = "plus2"
+
+        final_predictions.append(plus_fixed)
+        if nearest is not None:
+            used_non_plus.add(nearest)
+
+    for i, p in enumerate(non_plus):
+        if i in used_non_plus:
+            continue
+        final_predictions.append(p)
+
+    filtered_predictions = []
+    for i, p in enumerate(final_predictions):
+
+        if p["class"] != "zero":
+            continue
+
+        zero_center = np.array(p["center"])
+
+        remove_zero = False
+
+        for q in final_predictions:
+
+            if q["class"] not in ["six", "eight", "nine"]:
+                continue
+
+            if q["color"] != p["color"]:
+                continue
+
+            d = np.linalg.norm(
+                zero_center - np.array(q["center"])
+            )
+
+            if d < (2/3)*pair_distance_target:
+                remove_zero = True
+                break
+
+        if not remove_zero:
+            filtered_predictions.append(p)
+
+    # keep everything that is NOT zero (including 6/8/9 always)
+    for p in final_predictions:
+        if p["class"] != "zero":
+            filtered_predictions.append(p)
+
+    final_predictions = filtered_predictions
     
-    predictions = deduplicate_predictions(
-        predictions,
-        duplicate_distance_thresh=distance_thresh,
-        angle_thresh=angle_thresh
+    final_predictions = deduplicate_predictions(
+        final_predictions,
+        pair_distance_target=pair_distance_target
     )
 
-    return predictions
+    return final_predictions
 
 
 def find_cards_per_player(img, classifier):
-
-    org_img = img
-
-    mean_value = img.mean()
-
-    if mean_value > 200:
-
-        img = card_only_filter_blank(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-        img = remove_small_holes(img, max_size=20)
-        img = remove_small_objects(img, max_size=10000)
-        img = cv2.cvtColor(img.astype(np.uint8) * 255, cv2.COLOR_GRAY2RGB)
-
-    else:
-
-        img = card_only_filter_leaf(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-        img = remove_small_objects(img, max_size=300)
-        img = remove_small_holes(img, max_size=20)
-        img = cv2.cvtColor(img.astype(np.uint8) * 255, cv2.COLOR_GRAY2RGB)
 
     cards = {"p1": [], "p2": [], "p3": [], "p4": [], "center": []}
         
@@ -993,8 +955,72 @@ def find_cards_per_player(img, classifier):
 
         cards[player].append(string)
 
-        for i in cards.items():
-            if len(i[1]) == 0:
-                cards[i[0]] = "EMPTY"
+    for key in cards:
+        if len(cards[key]) == 0:
+            cards[key] = ["EMPTY"]
 
-    return cards
+    return predictions
+
+def plot_contours(image, contours, color=(0, 255, 0), thickness=2):
+    """
+    Draw contours returned by cv2.findContours.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        Input image (grayscale or BGR).
+    contours : list
+        Contours returned by cv2.findContours.
+    color : tuple
+        Contour color in BGR.
+    thickness : int
+        Line thickness.
+    """
+
+    if len(image.shape) == 2:
+        output = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    else:
+        output = image.copy()
+        
+    cv2.drawContours(output, contours, -1, color, thickness)
+
+    plt.figure(figsize=(8, 8))
+    plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+    plt.axis("off")
+    plt.show()
+    
+def classify_folder(img_folder, classifier):
+
+    result = pd.DataFrame(columns=["image_id","center_card","active_player","player_1_cards","player_2_cards","player_3_cards","player_4_cards"])
+    img_folder = Path(img_folder)
+    
+    for path in img_folder.glob("*.jpg"):
+        print(f'image: {path.stem}')
+        original_img = cv2.imread(str(path))
+        original_img = cv2.cvtColor(
+            original_img,
+            cv2.COLOR_BGR2RGB
+        )
+        row = []
+        player_cards = find_cards_per_player(original_img, classifier)
+        image_id = path.stem
+        center_card = player_cards["center"][0]
+        active_player = find_active_player(original_img)
+        player_1_cards = ";".join(player_cards["p1"])
+        player_2_cards = ";".join(player_cards["p2"])
+        player_3_cards = ";".join(player_cards["p3"])
+        player_4_cards = ";".join(player_cards["p4"])
+
+        row.append(image_id)
+        row.append(center_card)
+        row.append(active_player)
+        row.append(player_1_cards)
+        row.append(player_2_cards)
+        row.append(player_3_cards)
+        row.append(player_4_cards)
+
+        result.loc[len(result)] = row
+    return result
+
+def save_result(result):
+    result.to_csv("submission.csv", index=False)
