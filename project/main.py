@@ -3,8 +3,8 @@ import numpy as np
 
 from pathlib import Path
 
-from utils import classify_folder, FourierDiscriminator, save_result
-from dataset_creator import make_reference_group, build_rotated_descriptor_dataset
+from project.src.utils import classify_folder, FourierDiscriminator, save_result
+from project.src.dataset_creator import make_reference_group, build_rotated_descriptor_dataset
 
 def main():
 
