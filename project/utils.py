@@ -222,14 +222,12 @@ def card_only_filter_blank(img):
     
 def card_only_filter_leaf(img):
     hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-    rgb = img
-    rgb_filtered = apply_rgb_threshold(rgb, r_range=(200,255), g_range=(200,255), b_range=(200,255))
-    hsv_filtered = (hsv[:,:,0]<30)
+    rgb_filtered = apply_rgb_threshold(img, r_range=(200,255), g_range=(200,255), b_range=(200,255)) # see utils
+    hsv_filtered = (hsv[:,:,0]<25) | ((hsv[:,:,0]<170)&(hsv[:,:,0]>160))
     return rgb_filtered & hsv_filtered
 
 
 def find_active_player(img):
-    return 'p1'
     mean_value = img.mean()
     
     n = []
@@ -805,7 +803,6 @@ def classify_image(
 
         descriptor = np.asarray(descriptor).flatten()
         card_type, dist = classifier.predict(descriptor)
-
         if card_type == "None":
             continue
 
@@ -824,7 +821,10 @@ def classify_image(
 
         if player is None:
             continue
-
+        if color == "black" and card_type == 'zero':
+            card_type = 'wild'
+        if color != "black" and card_type == 'wild':
+            card_type = 'zero'
         if color == "black" and card_type not in ["wild", "plus"]:
             continue
 
@@ -871,7 +871,6 @@ def classify_image(
             d = np.linalg.norm(
                 np.array(p["center"]) - plus_center
             )
-            print(d)
             if d < nearest_dist and d < distance_threshold_plus:
                 nearest_dist = d
                 nearest = i
@@ -959,7 +958,7 @@ def find_cards_per_player(img, classifier):
         if len(cards[key]) == 0:
             cards[key] = ["EMPTY"]
 
-    return predictions
+    return cards
 
 def plot_contours(image, contours, color=(0, 255, 0), thickness=2):
     """
@@ -978,14 +977,14 @@ def plot_contours(image, contours, color=(0, 255, 0), thickness=2):
     """
 
     if len(image.shape) == 2:
-        output = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        output = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
     else:
         output = image.copy()
         
     cv2.drawContours(output, contours, -1, color, thickness)
 
     plt.figure(figsize=(8, 8))
-    plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+    plt.imshow(output)
     plt.axis("off")
     plt.show()
     
