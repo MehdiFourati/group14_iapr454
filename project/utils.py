@@ -9,6 +9,7 @@ import pandas as pd
 from pathlib import Path
 from collections import Counter
 from skimage.morphology import closing, opening, disk, remove_small_holes, remove_small_objects
+from tqdm import tqdm
 
 
 class FourierDiscriminator:
@@ -229,7 +230,6 @@ def card_only_filter_leaf(img):
 
 
 def find_active_player(img):
-    return 'p1'
     mean_value = img.mean()
     
     n = []
@@ -552,13 +552,6 @@ def classify_card_color(img_rgb):
     return None
     
 
-def classify_card_number(img):
-    """
-    Placeholder
-    """
-    return "PLACEHOLDER"
-
-
 def find_central_card(img):
     """    
     Args:
@@ -599,7 +592,7 @@ def find_central_card(img):
     if len(valid_contours) > 0:
         normalized = extract_and_normalize_card(img_cropped, valid_contours[0])
         color = classify_card_color(normalized)
-        number = classify_card_number(normalized)
+        number = "8" #classify_card_number(normalized)
 
         if color:
             return color+"_"+number
@@ -959,7 +952,7 @@ def find_cards_per_player(img, classifier):
         if len(cards[key]) == 0:
             cards[key] = ["EMPTY"]
 
-    return predictions
+    return cards
 
 def plot_contours(image, contours, color=(0, 255, 0), thickness=2):
     """
@@ -994,13 +987,10 @@ def classify_folder(img_folder, classifier):
     result = pd.DataFrame(columns=["image_id","center_card","active_player","player_1_cards","player_2_cards","player_3_cards","player_4_cards"])
     img_folder = Path(img_folder)
     
-    for path in img_folder.glob("*.jpg"):
+    for path in tqdm(img_folder.glob("*.jpg")):
         print(f'image: {path.stem}')
         original_img = cv2.imread(str(path))
-        original_img = cv2.cvtColor(
-            original_img,
-            cv2.COLOR_BGR2RGB
-        )
+        original_img = cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB)
         row = []
         player_cards = find_cards_per_player(original_img, classifier)
         image_id = path.stem
