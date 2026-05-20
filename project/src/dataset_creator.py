@@ -1,7 +1,7 @@
 import cv2
 import os
 from glob import glob
-from project.src.utils import *
+from src.utils import *
 
 
 def rotate_image(image, angle):

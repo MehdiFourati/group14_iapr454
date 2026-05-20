@@ -1,10 +1,9 @@
-import pandas as pd
 import numpy as np
 
 from pathlib import Path
 
-from project.src.utils import classify_folder, FourierDiscriminator, save_result
-from project.src.dataset_creator import make_reference_group, build_rotated_descriptor_dataset
+from src.utils import classify_folder, FourierDiscriminator, save_result
+from src.dataset_creator import make_reference_group, build_rotated_descriptor_dataset
 
 def main():
 
